@@ -17,7 +17,7 @@
 # Written for bash 3.2 (the macOS default): no associative arrays, no mapfile.
 
 set -uo pipefail
-VERSION=1.2.1
+VERSION=1.2.2
 # System tools first: a stray `head`, `du` or `sort` earlier on PATH (XAMPP ships a perl
 # `head`, for one) silently breaks the parsing below.
 export PATH="/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
@@ -547,7 +547,7 @@ HARNESSES="
 claude|Claude Code|claude|$H/.claude;$H/.local/share/claude;$H/.cache/claude||
 opencode|OpenCode|opencode|$H/.local/share/opencode;$H/.config/opencode;$H/.cache/opencode;$H/.opencode||
 codex|Codex CLI|codex|$H/.codex;$H/.cache/codex-runtimes|/Applications/Codex.app|
-gemini|Gemini CLI|gemini|$H/.gemini;-$H/.gemini/antigravity||Gemini Code Assist in an editor can use ~/.gemini too
+gemini|Gemini CLI|gemini|$H/.gemini/tmp;$H/.gemini/history;$H/.gemini/oauth_creds.json;$H/.gemini/google_accounts.json;$H/.gemini/extensions;$H/.gemini/commands||Antigravity and Gemini Code Assist share the rest of ~/.gemini
 qwen|Qwen Code|qwen|$H/.qwen||
 kilo|Kilo Code CLI|kilo,kilocode|$H/.kilocode;$H/.cache/kilo;$H/.local/share/kilo;$H/.config/kilo||
 aider|Aider|aider|$H/.aider;$H/.cache/aider||
@@ -587,9 +587,17 @@ uninstall_hint() { # uninstall_hint RESOLVED_PATH COMMAND
       rest=${t##*/node_modules/}; pkg=${rest%%/*}
       [ "${pkg#@}" != "$pkg" ] && pkg="$pkg/$(echo "${rest#*/}" | cut -d/ -f1)"
       case $t in
-        */.bun/*) echo "bun remove -g $pkg" ;;
+        */.bun/*)
+          # Packages bun no longer lists are orphans: `bun remove` can't see them.
+          if grep -q "\"$pkg\"" "$H/.bun/install/global/package.json" 2>/dev/null; then echo "bun remove -g $pkg"
+          else echo "orphan (not in bun's package list): rm ~/.bun/bin/$2, then cd ~/.bun/install/global && mv node_modules ~/.Trash/bun-global-node_modules && bun install"; fi ;;
         */pnpm/*) echo "pnpm remove -g $pkg" ;;
-        *) echo "npm uninstall -g $pkg" ;;
+        *)
+          # npm only looks in its current prefix; a package under another one needs --prefix.
+          local prefix=${t%%/lib/node_modules/*} cur
+          cur=$(npm prefix -g 2>/dev/null)
+          if [ -n "$cur" ] && [ "$cur" != "$prefix" ]; then echo "npm uninstall -g --prefix $(tilde "$prefix") $pkg"
+          else echo "npm uninstall -g $pkg"; fi ;;
       esac ;;
     */pipx/venvs/*) rest=${t#*/pipx/venvs/}; echo "pipx uninstall ${rest%%/*}" ;;
     */uv/tools/*) rest=${t#*/uv/tools/}; echo "uv tool uninstall ${rest%%/*}" ;;
