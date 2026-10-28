@@ -1,7 +1,7 @@
 {
   "name": "clean-dev-caches",
-  "description": "Free disk space by clearing regenerable developer caches, stale build outputs and merged git worktrees — safely, with a dry run first",
-  "version": "1.1.0",
+  "description": "Free disk space by clearing regenerable developer caches, stale build outputs, merged git worktrees and unused tools — safely, with a dry run first",
+  "version": "1.2.0",
   "author": {
     "name": "Adrian De Vera"
   },

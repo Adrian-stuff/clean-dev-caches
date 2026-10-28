@@ -34,6 +34,25 @@ terminals, other agents).
 DeviceSupport, Xcode Archives, simulator devices, browser profiles, `node_modules`, and
 `~/Library/Caches` as a whole.
 
+## Install the `devclean` command
+
+With Homebrew:
+
+```bash
+brew tap Adrian-stuff/clean-dev-caches https://github.com/Adrian-stuff/clean-dev-caches
+brew install devclean
+```
+
+Or with the install script, which puts it in `~/.local/bin` (`PREFIX=/usr/local` changes that):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Adrian-stuff/clean-dev-caches/main/install.sh | bash
+# also install the Claude Code skill:
+curl -fsSL https://raw.githubusercontent.com/Adrian-stuff/clean-dev-caches/main/install.sh | bash -s -- --skill
+```
+
+It's a single bash script with no dependencies, so you can also just download it and run it.
+
 ## Install as a Claude Code skill
 
 As a plugin:
@@ -54,9 +73,10 @@ Then ask Claude something like *"my disk is almost full, clear my dev caches"*. 
 measures first, shows you the table, cleans what you agree to, and reports the real
 amount freed.
 
-## Use the script directly
+## Use it from the terminal
 
-No Claude needed. It's bash 3.2 compatible, so it runs on stock macOS.
+No Claude needed. It's bash 3.2 compatible, so it runs on stock macOS. With `devclean`
+installed, replace `bash $S` below with `devclean`.
 
 ```bash
 S=skills/clean-dev-caches/scripts/devclean.sh
@@ -69,6 +89,7 @@ bash $S builds ~/projects --older-than 30   # .next/.turbo/... not rebuilt in 30
 bash $S builds ~/projects --older-than 90 --node-modules   # + node_modules of idle projects
 bash $S worktrees ~/code/my-repo # SAFE / KEEP / REVIEW for each git worktree
 bash $S suggest                  # bigger wins beyond caches (report only)
+bash $S tools                    # AI coding CLIs and global tools you stopped using (report only)
 bash $S list                     # every cache id
 ```
 
@@ -105,6 +126,39 @@ It looks at:
 - extra Node, Rust, Python and Java versions (nvm, fnm, Volta, rustup, pyenv, SDKMAN)
 - Conda packages and orphaned Homebrew packages
 - big app caches, files over 1 GB, and Time Machine local snapshots
+
+### `tools`: AI coding CLIs and other tools you stopped using
+
+Coding harnesses pile up quickly, and each one keeps gigabytes of sessions, runtimes and
+caches. `tools` finds them, reports when each was last used, and says how to remove it the
+way it was installed. It deletes nothing.
+
+```
+AI coding tools and model runners
+VERDICT   TOOL                 LAST USED   INSTALL     DATA  HOW TO REMOVE
+IN USE    Claude Code          0d ago            -     1.6G  rm ~/.local/bin/claude; then rm -rf ~/.claude ...
+USED      Codex CLI            14d ago           -     2.4G  rm ~/.local/bin/codex; then rm -rf ~/.codex ~/.cache/codex-runtimes
+LEFTOVER  Gemini CLI           -                 -      40M  delete what's in ~/.gemini except ~/.gemini/antigravity
+UNUSED    Kilo Code CLI        79d ago         28K      65M  bun remove -g @kilocode/cli; then rm -rf ~/.cache/kilo ...
+UNUSED    Goose                79d ago        301M       6M  brew uninstall block-goose-cli; then rm -rf ~/.config/goose ...
+
+Other global command-line tools not used in 60+ days
+    SIZE  LAST RUN   COMMAND                    HOW TO REMOVE
+    2.9G  79d ago    omniroute                  npm uninstall -g omniroute
+    296M  65d ago    mysqld                     brew uninstall mysql
+      9M  113d ago   fast                       rm ~/go/bin/fast
+```
+
+- **What it knows:** Claude Code, OpenCode, Codex, Gemini CLI, Qwen Code, Kilo Code, Aider,
+  Goose, Amp, Crush, Cursor, Windsurf, Factory Droid, GitHub Copilot CLI, Cline, Augment,
+  Continue, Kiro, OpenHands, Plandex, Antigravity, Ollama and LM Studio.
+- **Other tools:** Homebrew formulae you installed yourself (not their dependencies), plus
+  global npm, Bun and pnpm packages, pipx and uv tools, and `cargo install` and
+  `go install` binaries.
+- **How "last used" works:** it's the later of when the command last ran (the file's access
+  time) and when the tool last wrote its sessions or logs. `--older-than DAYS` (default 60)
+  sets the idle threshold. Running a tool, even with `--version`, makes it look used again,
+  so the report never does.
 
 Example `scan`:
 

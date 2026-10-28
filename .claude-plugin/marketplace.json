@@ -1,6 +1,6 @@
 {
   "name": "clean-dev-caches",
-  "description": "Free disk space by safely clearing developer caches, stale build outputs and merged git worktrees",
+  "description": "Free disk space by safely clearing developer caches, stale build outputs, merged git worktrees and unused tools",
   "owner": {
     "name": "Adrian De Vera"
   },
@@ -8,8 +8,8 @@
     {
       "name": "clean-dev-caches",
       "source": "./",
-      "description": "Free disk space by clearing regenerable developer caches, stale build outputs and merged git worktrees",
-      "version": "1.1.0",
+      "description": "Free disk space by clearing regenerable developer caches, stale build outputs, merged git worktrees and unused tools",
+      "version": "1.2.0",
       "author": {
         "name": "Adrian De Vera"
       }

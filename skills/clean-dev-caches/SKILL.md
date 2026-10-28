@@ -21,8 +21,12 @@ bash scripts/devclean.sh builds ~/projects --older-than 30          # only outpu
 bash scripts/devclean.sh builds ~/projects --older-than 90 --node-modules   # + deps of idle projects
 bash scripts/devclean.sh worktrees ~/projects/my-repo   # report only
 bash scripts/devclean.sh suggest           # bigger wins beyond caches; report only
+bash scripts/devclean.sh tools             # AI coding CLIs and global tools you stopped using; report only
 bash scripts/devclean.sh list              # every cache id
 ```
+
+If `devclean` is on PATH (installed by the repo's `install.sh` or Homebrew), it's the same
+script, so `devclean scan` works too.
 
 `clean` and `builds` are dry runs until `--yes` is passed.
 
@@ -69,7 +73,25 @@ bash scripts/devclean.sh list              # every cache id
    and use the command on its line. A VM disk or a model is someone's working environment,
    not junk. Never `colima delete`, `docker image prune -a` or `ollama rm` without a
    specific yes.
-7. **Report.** Run `df -h ~` again and give the change in free space as the result. Also
+7. **Unused tools.** `devclean.sh tools [--older-than DAYS]` (default 60) has two parts.
+   - **AI coding tools and model runners:** Claude Code, OpenCode, Codex, Gemini, Qwen,
+     Kilo, Aider, Goose, Amp, Crush, Cursor, Windsurf, Droid, Copilot CLI, Cline, Auggie,
+     Continue, Kiro, OpenHands, Plandex, Antigravity, Ollama and LM Studio. Each gets:
+     - a verdict: `IN USE` (running now), `USED`, `UNUSED` (idle that many days) or
+       `LEFTOVER` (uninstalled, but its data is still there)
+     - its install size and data size
+     - the exact uninstall command for how it was installed (brew, npm, bun, pnpm, app
+       bundle or native binary), then how to remove its data
+   - **Other global command-line tools idle that long:** Homebrew formulae you installed
+     yourself (not dependencies), plus npm, Bun, pnpm, pipx, uv, `cargo install` and
+     `go install` tools.
+
+   "Last used" is the later of the command's last-run time (file access time) and when it
+   last wrote sessions, logs or settings. Never run a tool to check it, because even
+   `--version` resets that date. Data folders hold sessions, settings and logins, so
+   suggest deleting them only together with the uninstall. Never touch the harness you are
+   running in. Ask before each removal.
+8. **Report.** Run `df -h ~` again and give the change in free space as the result. Also
    list what was skipped and why.
 
 ## Things to know

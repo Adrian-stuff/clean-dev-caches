@@ -1,22 +1,30 @@
 #!/usr/bin/env bash
 # devclean — find and clear regenerable developer caches on macOS (and most of Linux).
 #
-#   devclean.sh scan [--deep]                      what can be freed, nothing deleted
-#   devclean.sh clean [--deep] [--only a,b] [--yes] delete caches (dry run without --yes)
-#   devclean.sh builds DIR... [--older-than DAYS] [--node-modules] [--yes]
-#                                                  .next/.turbo/target/... under DIR (dry run without --yes);
-#                                                  --node-modules adds deps of projects idle that long
-#   devclean.sh worktrees REPO                     which git worktrees are safe to remove (report only)
-#   devclean.sh suggest [DIR...]                   bigger wins beyond caches, with how to act (report only)
+#   devclean scan [--deep]                      what can be freed, nothing deleted
+#   devclean clean [--deep] [--only a,b] [--yes] delete caches (dry run without --yes)
+#   devclean builds DIR... [--older-than DAYS] [--node-modules] [--yes]
+#                                               .next/.turbo/target/... under DIR (dry run without --yes);
+#                                               --node-modules adds deps of projects idle that long
+#   devclean worktrees REPO                     which git worktrees are safe to remove (report only)
+#   devclean suggest [DIR...]                   bigger wins beyond caches, with how to act (report only)
+#   devclean tools [--older-than DAYS]          AI coding CLIs and other global tools you stopped using,
+#                                               and data left behind by uninstalled ones (report only)
+#   devclean list | --version | help
 #
 # Everything this deletes is rebuilt or re-downloaded on demand. It never touches
 # Docker images or volumes, emulators, simulators' data, browser profiles, or git work.
 # Written for bash 3.2 (the macOS default): no associative arrays, no mapfile.
 
 set -uo pipefail
+VERSION=1.2.0
 # System tools first: a stray `head`, `du` or `sort` earlier on PATH (XAMPP ships a perl
 # `head`, for one) silently breaks the parsing below.
 export PATH="/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+
+# BSD and GNU stat disagree on flags; GNU `stat -f` means "filesystem" and prints garbage.
+if [ "$(uname -s)" = Darwin ]; then STAT_M=(stat -f %m); STAT_A=(stat -f %a)
+else STAT_M=(stat -c %Y); STAT_A=(stat -c %X); fi
 
 H="$HOME"
 LC="$H/Library/Caches"
@@ -271,15 +279,22 @@ cmd_clean() {
 
 # ---------- project build outputs ----------
 
-mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo 0; }
+mtime() { "${STAT_M[@]}" "$1" 2>/dev/null || echo 0; }
+
+NOW=$(date +%s)
+
+# Newest mtime (epoch) of anything under the given paths, to DEPTH levels (default: all).
+newest_mtime() { # newest_mtime DEPTH PATH...
+  local depth=$1; shift
+  local args=(); [ "$depth" -gt 0 ] && args=(-maxdepth "$depth")
+  find "$@" ${args[@]+"${args[@]}"} -print0 2>/dev/null | xargs -0 "${STAT_M[@]}" 2>/dev/null | sort -n | tail -1
+}
 
 # Days since anything near the top of DIR was written. A folder's own mtime only moves when
 # its direct entries change, so a busy .next can look months old by that alone.
 days_ago() {
-  local newest
-  newest=$(find "$1" -maxdepth 2 -exec stat -f '%m' {} + 2>/dev/null | sort -n | tail -1)
-  [ -n "$newest" ] || newest=$(find "$1" -maxdepth 2 -printf '%T@\n' 2>/dev/null | sort -n | tail -1 | cut -d. -f1)
-  echo $(( ($(date +%s) - ${newest:-$(mtime "$1")}) / 86400 ))
+  local newest; newest=$(newest_mtime 2 "$1")
+  echo $(( (NOW - ${newest:-$(mtime "$1")}) / 86400 ))
 }
 
 # True when nothing in the project (outside dependency and build folders) changed in DAYS days.
@@ -302,7 +317,7 @@ build_dirs() { # build_dirs WITH_NODE_MODULES DIR...
 cmd_builds() {
   local yes=$1 older=$2 nm=$3; shift 3
   local total=0 d k root age name
-  [ $# -gt 0 ] || { echo "usage: devclean.sh builds DIR... [--older-than DAYS] [--node-modules] [--yes]" >&2; return 2; }
+  [ $# -gt 0 ] || { echo "usage: devclean builds DIR... [--older-than DAYS] [--node-modules] [--yes]" >&2; return 2; }
   if [ "$nm" = 1 ] && [ "$older" -eq 0 ]; then
     echo "--node-modules needs --older-than DAYS, so active projects keep their dependencies." >&2; return 2
   fi
@@ -372,7 +387,7 @@ cmd_suggest() {
       k=$((k + $(size_k "$p"))); n=$((n + 1))
     done < <(build_dirs 1 "${roots[@]}")
     suggest "$k" "node_modules in $n projects idle for 90+ days (du overstates on APFS)" \
-      "devclean.sh builds ${roots[*]} --older-than 90 --node-modules --yes"
+      "devclean builds ${roots[*]} --older-than 90 --node-modules --yes"
     k=0; n=0
     while IFS= read -r p; do
       [ "$(basename "$p")" = node_modules ] && continue
@@ -382,7 +397,7 @@ cmd_suggest() {
       k=$((k + $(size_k "$p"))); n=$((n + 1))
     done < <(build_dirs 0 "${roots[@]}")
     suggest "$k" "$n build outputs (.next, .turbo, target...) not rebuilt for 30+ days" \
-      "devclean.sh builds ${roots[*]} --older-than 30 --yes"
+      "devclean builds ${roots[*]} --older-than 30 --yes"
   fi
 
   # Docker
@@ -488,7 +503,7 @@ cmd_suggest() {
 
 cmd_worktrees() {
   local repo=${1:-}
-  [ -n "$repo" ] && git -C "$repo" rev-parse --git-dir >/dev/null 2>&1 || { echo "usage: devclean.sh worktrees REPO" >&2; return 2; }
+  [ -n "$repo" ] && git -C "$repo" rev-parse --git-dir >/dev/null 2>&1 || { echo "usage: devclean worktrees REPO" >&2; return 2; }
   repo=$(cd "$repo" && git rev-parse --show-toplevel)
   git -C "$repo" fetch -q --all --prune 2>/dev/null
   local base; base=$(git -C "$repo" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || echo origin/main)
@@ -524,6 +539,262 @@ cmd_worktrees() {
   echo "Removing a worktree whose node_modules were cloned (APFS) frees far less than du reports."
 }
 
+# ---------- unused tools (report only) ----------
+
+# AI coding harnesses and local-model runners.
+# id|name|commands|data paths (a leading - excludes a path another tool owns)|app bundle|note for leftovers
+HARNESSES="
+claude|Claude Code|claude|$H/.claude;$H/.local/share/claude;$H/.cache/claude||
+opencode|OpenCode|opencode|$H/.local/share/opencode;$H/.config/opencode;$H/.cache/opencode;$H/.opencode||
+codex|Codex CLI|codex|$H/.codex;$H/.cache/codex-runtimes|/Applications/Codex.app|
+gemini|Gemini CLI|gemini|$H/.gemini;-$H/.gemini/antigravity||Gemini Code Assist in an editor can use ~/.gemini too
+qwen|Qwen Code|qwen|$H/.qwen||
+kilo|Kilo Code CLI|kilo,kilocode|$H/.kilocode;$H/.cache/kilo;$H/.local/share/kilo;$H/.config/kilo||
+aider|Aider|aider|$H/.aider;$H/.cache/aider||
+goose|Goose|goose|$H/.config/goose;$H/.local/share/goose;$H/.local/state/goose|/Applications/Goose.app|
+amp|Amp|amp|$H/.amp;$H/.config/amp;$H/.cache/amp;$H/.local/share/amp||
+crush|Crush|crush|$H/.local/share/crush;$H/.config/crush;$H/.cache/crush||
+cursor|Cursor|cursor-agent,cursor|$H/.cursor;$H/.local/share/cursor-agent|/Applications/Cursor.app|
+windsurf|Windsurf|windsurf|$H/.windsurf;$H/.codeium;$AS/Windsurf|/Applications/Windsurf.app|
+droid|Factory Droid|droid|$H/.factory||
+copilot|GitHub Copilot CLI|copilot|$H/.copilot||
+cline|Cline CLI|cline|$H/.cline||
+auggie|Augment (auggie)|auggie|$H/.augment||
+continue|Continue CLI|cn|$H/.continue||the Continue editor extension also uses ~/.continue
+kiro|Kiro|kiro-cli,kiro|$H/.kiro|/Applications/Kiro.app|
+openhands|OpenHands|openhands|$H/.openhands||
+plandex|Plandex|plandex|$H/.plandex-home||
+antigravity|Antigravity|agy,antigravity|$H/.gemini/antigravity;$AS/Antigravity;$H/.antigravity;$H/.cache/antigravity;$LC/com.google.antigravity;$LC/com.google.antigravity.ShipIt;$LC/antigravity-updater|/Applications/Antigravity.app|
+ollama|Ollama|ollama|$H/.ollama|/Applications/Ollama.app|
+lmstudio|LM Studio|lms|$H/.lmstudio;$H/.cache/lm-studio|/Applications/LM Studio.app|
+"
+
+if [ "$(uname -s)" = Darwin ]; then STAT_I=(stat -f %i); else STAT_I=(stat -c %i); fi
+
+tilde() { # ~/path for display; quoted after the ~/ when it has spaces, so it still pastes
+  local p=${1/#$H/\~}
+  case $p in *" "*) case $p in "~/"*) p="~/\"${p#\~/}\"" ;; *) p="\"$p\"" ;; esac ;; esac
+  printf '%s' "$p"
+}
+
+# How a command was installed, from where its link resolves: prints "how to uninstall".
+uninstall_hint() { # uninstall_hint RESOLVED_PATH COMMAND
+  local t=$1 rest pkg
+  case $t in
+    */Caskroom/*) rest=${t#*/Caskroom/}; echo "brew uninstall --cask ${rest%%/*}" ;;
+    */Cellar/*) rest=${t#*/Cellar/}; echo "brew uninstall ${rest%%/*}" ;;
+    */.bun/install/global/node_modules/*|*/lib/node_modules/*|*/pnpm/global/*/node_modules/*)
+      rest=${t##*/node_modules/}; pkg=${rest%%/*}
+      [ "${pkg#@}" != "$pkg" ] && pkg="$pkg/$(echo "${rest#*/}" | cut -d/ -f1)"
+      case $t in
+        */.bun/*) echo "bun remove -g $pkg" ;;
+        */pnpm/*) echo "pnpm remove -g $pkg" ;;
+        *) echo "npm uninstall -g $pkg" ;;
+      esac ;;
+    */pipx/venvs/*) rest=${t#*/pipx/venvs/}; echo "pipx uninstall ${rest%%/*}" ;;
+    */uv/tools/*) rest=${t#*/uv/tools/}; echo "uv tool uninstall ${rest%%/*}" ;;
+    */.cargo/bin/*) echo "cargo uninstall $2" ;;
+    */Applications/*.app/*) rest=${t%%.app/*}; echo "move $(tilde "$rest.app") to the Trash" ;;
+    *) echo "rm $(tilde "$(command -v "$2")")" ;;
+  esac
+}
+
+# Package root a resolved command lives in, so its install size can be measured.
+install_root() { # install_root RESOLVED_PATH
+  local t=$1 rest pkg
+  case $t in
+    */Caskroom/*) rest=${t#*/Caskroom/}; echo "${t%%/Caskroom/*}/Caskroom/${rest%%/*}" ;;
+    */Cellar/*) rest=${t#*/Cellar/}; echo "${t%%/Cellar/*}/Cellar/${rest%%/*}" ;;
+    */node_modules/*)
+      rest=${t##*/node_modules/}; pkg=${rest%%/*}
+      [ "${pkg#@}" != "$pkg" ] && pkg="$pkg/$(echo "${rest#*/}" | cut -d/ -f1)"
+      echo "${t%"$rest"}$pkg" ;;
+    */pipx/venvs/*) rest=${t#*/pipx/venvs/}; echo "${t%%/pipx/venvs/*}/pipx/venvs/${rest%%/*}" ;;
+    */uv/tools/*) rest=${t#*/uv/tools/}; echo "${t%%/uv/tools/*}/uv/tools/${rest%%/*}" ;;
+    */Applications/*.app/*) echo "${t%%.app/*}.app" ;;
+    *) echo "$t" ;;
+  esac
+}
+
+# Newest file mtime under PATHS, skipping excluded ones. Arguments: data spec "a;b;-c".
+data_newest() {
+  local spec=$1 p paths=() skip=() IFS=';'
+  for p in $spec; do
+    case $p in -*) skip+=(-path "${p#-}" -o) ;; *) [ -e "$p" ] && paths+=("$p") ;; esac
+  done
+  unset IFS
+  [ ${#paths[@]} -gt 0 ] || return 0
+  if [ ${#skip[@]} -gt 0 ]; then
+    unset 'skip[${#skip[@]}-1]' # trailing -o
+    find "${paths[@]}" \( "${skip[@]}" \) -prune -o -type f -print0 2>/dev/null
+  else
+    find "${paths[@]}" -type f -print0 2>/dev/null
+  fi | xargs -0 "${STAT_M[@]}" 2>/dev/null | sort -n | tail -1
+}
+
+data_size() { # data_size "a;b;-c" -> KiB of a+b minus c
+  local spec=$1 p t=0 IFS=';'
+  for p in $spec; do
+    case $p in -*) t=$((t - $(size_k "${p#-}"))) ;; *) t=$((t + $(size_k "$p"))) ;; esac
+  done
+  [ "$t" -lt 0 ] && t=0
+  echo "$t"
+}
+
+data_rm_hint() { # how to delete a tool's data, respecting excluded paths
+  local spec=$1 p keep="" dirs="" IFS=';'
+  for p in $spec; do
+    case $p in -*) keep="$keep $(tilde "${p#-}")" ;; *) [ -e "$p" ] && dirs="$dirs $(tilde "$p")" ;; esac
+  done
+  [ -n "$dirs" ] || return 0
+  if [ -n "$keep" ]; then echo "delete what's in${dirs} except${keep}"
+  else echo "rm -rf${dirs}"; fi
+}
+
+days_since() { [ "${1:-0}" -gt 0 ] && echo $(( (NOW - $1) / 86400 )) || echo -; }
+
+cmd_tools() {
+  local older=${1:-0}; [ "$older" -gt 0 ] || older=60
+  local line id name cmds spec app note c p t last a bin_t data_k inst_k inst_root running verdict how rm_data d
+  echo "Last used = the later of when its command last ran (file access time) and when it last"
+  echo "wrote its sessions, logs or settings. Report only: nothing is deleted."
+  echo
+  echo "AI coding tools and model runners"
+  printf '%-9s %-20s %-10s %8s %8s  %s\n' VERDICT TOOL "LAST USED" INSTALL DATA "HOW TO REMOVE"
+  local harness_cmds="" harness_roots=""
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    IFS='|' read -r id name cmds spec app note <<EOF
+$line
+EOF
+    harness_cmds="$harness_cmds,$cmds"
+    last=0; bin_t=""; running=0
+    for c in $(echo "$cmds" | tr ',' ' '); do
+      p=$(command -v "$c" 2>/dev/null) || continue
+      case $p in /*) ;; *) continue ;; esac # skip shell functions and aliases
+      t=$(realpath "$p" 2>/dev/null || echo "$p")
+      [ -n "$bin_t" ] || bin_t=$t
+      a=$("${STAT_A[@]}" "$t" 2>/dev/null || echo 0); [ "$a" -gt "$last" ] && last=$a
+      pgrep -x "$c" >/dev/null 2>&1 && running=1
+    done
+    if [ -n "$app" ] && [ -d "$app" ]; then
+      [ -n "$bin_t" ] || bin_t="$app/Contents/MacOS/x"
+      for p in "$app"/Contents/MacOS/*; do
+        a=$("${STAT_A[@]}" "$p" 2>/dev/null || echo 0); [ "$a" -gt "$last" ] && last=$a
+      done
+      pgrep -f "$app/Contents/MacOS/" >/dev/null 2>&1 && running=1
+    fi
+    data_k=$(data_size "$spec")
+    [ -z "$bin_t" ] && [ "$data_k" -lt 1024 ] && continue # not installed, nothing left behind
+    d=$(data_newest "$spec"); [ "${d:-0}" -gt "$last" ] && last=$d
+    rm_data=$(data_rm_hint "$spec")
+    if [ -n "$bin_t" ]; then
+      inst_root=$(install_root "$bin_t")
+      # A native install that lives inside its own data folder is already counted under DATA.
+      inst_k=$(size_k "$inst_root")
+      while IFS= read -r p; do
+        case $inst_root in "$p"|"$p"/*) inst_k=0 ;; esac
+      done < <(echo "$spec" | tr ';' '\n' | grep -v '^-')
+      harness_roots="$harness_roots|$inst_root|"
+      # An app bundle is the real install; its CLI link goes with it.
+      if [ -n "$app" ] && [ -d "$app" ]; then how="move $(tilde "$app") to the Trash"
+      else how=$(uninstall_hint "$bin_t" "${cmds%%,*}"); fi
+      [ -n "$rm_data" ] && how="$how; then $rm_data"
+    else
+      inst_k=0; how="$rm_data${note:+  ($note)}"
+    fi
+    if [ "$running" = 1 ]; then verdict="IN USE"
+    elif [ -z "$bin_t" ]; then verdict=LEFTOVER
+    elif [ "$(days_since "$last")" != - ] && [ "$(days_since "$last")" -ge "$older" ]; then verdict=UNUSED
+    else verdict=USED; fi
+    local lu; lu=$(days_since "$last"); [ "$lu" != - ] && lu="${lu}d ago"
+    printf '%-9s %-20s %-10s %8s %8s  %s\n' "$verdict" "$name" "$lu" \
+      "$([ "$inst_k" -gt 0 ] && human "$inst_k" || echo -)" "$(human "$data_k")" "$how"
+  done <<EOF
+$HARNESSES
+EOF
+
+  echo
+  echo "Other global command-line tools not used in ${older}+ days"
+  local rows="" bindir marker
+  # Package-manager installs, found through the links in each manager's bin folder.
+  {
+    have brew && for bindir in "$(brew --prefix 2>/dev/null)/bin"; do link_owners "$bindir"; done
+    have npm && link_owners "$(npm prefix -g 2>/dev/null)/bin"
+    [ -d "$H/.bun/bin" ] && link_owners "$H/.bun/bin"
+    have pnpm && link_owners "$(pnpm bin -g 2>/dev/null)"
+    [ -d "$H/.local/bin" ] && link_owners "$H/.local/bin"
+    standalone_bins "$H/.cargo/bin" cargo
+    standalone_bins "$H/go/bin" go
+  } > "${TMPDIR:-/tmp}/devclean-tools.$$" 2>/dev/null
+  local leaves=""; have brew && leaves=" $(brew leaves --installed-on-request 2>/dev/null | tr '\n' ' ') "
+  rows=$(tool_rows "$harness_cmds" "$leaves" "$harness_roots" < "${TMPDIR:-/tmp}/devclean-tools.$$" |
+         sort -t'|' -k1,1 -k2,2nr | awk -F'|' '!seen[$1]++')
+  rm -f "${TMPDIR:-/tmp}/devclean-tools.$$"
+  local out="" root k days
+  while IFS='|' read -r root a c t; do
+    [ -n "$root" ] || continue
+    days=$(days_since "$a"); [ "$days" = - ] && continue
+    [ "$days" -ge "$older" ] || continue
+    k=$(size_k "$root")
+    out="$out$k|${days}d ago|$c|$(uninstall_hint "$t" "$c")
+"
+  done <<EOF
+$rows
+EOF
+  if [ -z "$out" ]; then echo "  none"; else
+    printf '%8s  %-10s %-26s %s\n' SIZE "LAST RUN" COMMAND "HOW TO REMOVE"
+    printf '%s' "$out" | sort -t'|' -k1,1 -rn | while IFS='|' read -r k lu c how; do
+      printf '%8s  %-10s %-26s %s\n' "$(human "$k")" "$lu" "$c" "$how"
+    done
+  fi
+  echo
+  echo "Data folders hold sessions, settings and logins — keep them if you might reinstall."
+  echo "Running a command (even --version) resets its last-used date; this report never does."
+}
+
+# stdin "cmd|resolved|atime" -> "package root|atime|cmd|resolved", minus harnesses, package
+# managers themselves, and Homebrew formulae that were only pulled in as dependencies.
+# (A function, not inline: bash 3.2 can't parse `case` inside $(...).)
+tool_rows() { # tool_rows HARNESS_CMDS BREW_LEAVES HARNESS_ROOTS
+  local c t a f
+  while IFS='|' read -r c t a; do
+    [ -n "$t" ] || continue
+    case ",$1," in *",$c,"*) continue ;; esac
+    case "$3" in *"|$(install_root "$t")|"*) continue ;; esac # another command of a harness above
+    case $c in npm|npx|corepack|pnpm|pnpx|yarn|yarnpkg|bun|bunx|node|brew|pipx|uv|uvx|cargo|rustup|go) continue ;; esac
+    case $t in
+      */Cellar/*) f=${t#*/Cellar/}; f=${f%%/*}
+        case "$2" in *" $f "*) ;; *) continue ;; esac ;;
+    esac
+    printf '%s|%s|%s|%s\n' "$(install_root "$t")" "$a" "$c" "$t"
+  done
+}
+
+# Commands in BINDIR that are links into a package manager's folder: prints "cmd|resolved|atime".
+link_owners() {
+  local bin=$1 l t
+  [ -d "$bin" ] || return 0
+  for l in "$bin"/*; do
+    [ -L "$l" ] || continue
+    t=$(realpath "$l" 2>/dev/null) || continue
+    case $t in */Cellar/*|*/Caskroom/*|*/node_modules/*|*/pipx/venvs/*|*/uv/tools/*) ;; *) continue ;; esac
+    printf '%s|%s|%s\n' "$(basename "$l")" "$t" "$("${STAT_A[@]}" "$t" 2>/dev/null || echo 0)"
+  done
+}
+
+# Self-contained binaries (cargo install, go install). Skips rustup's proxies (same inode as rustup).
+standalone_bins() { # standalone_bins DIR KIND
+  local dir=$1 f ri=""
+  [ -d "$dir" ] || return 0
+  [ -e "$dir/rustup" ] && ri=$("${STAT_I[@]}" "$dir/rustup" 2>/dev/null)
+  for f in "$dir"/*; do
+    [ -f "$f" ] && [ ! -L "$f" ] || continue
+    [ -n "$ri" ] && [ "$("${STAT_I[@]}" "$f" 2>/dev/null)" = "$ri" ] && continue
+    printf '%s|%s|%s\n' "$(basename "$f")" "$f" "$("${STAT_A[@]}" "$f" 2>/dev/null || echo 0)"
+  done
+}
+
 # ---------- main ----------
 
 main() {
@@ -545,16 +816,18 @@ main() {
   done
   local id
   for id in $(echo "$only" | tr ',' ' '); do
-    target_line "$id" >/dev/null || echo "unknown id: $id (see: devclean.sh list)" >&2
+    target_line "$id" >/dev/null || echo "unknown id: $id (see: devclean list)" >&2
   done
   case $cmd in
     scan) cmd_scan "$deep" "$only" ;;
     clean) cmd_clean "$deep" "$only" "$yes" ;;
     builds) cmd_builds "$yes" "$older" "$nm" ${args[@]+"${args[@]}"} ;;
     suggest) cmd_suggest ${args[@]+"${args[@]}"} ;;
+    tools) cmd_tools "$older" ;;
+    version|--version|-v) echo "devclean $VERSION" ;;
     worktrees) cmd_worktrees ${args[@]+"${args[@]}"} ;;
     list) echo "$TARGETS" | awk -F'|' 'NF>2{printf "%-11s %-5s %s\n",$1,$2,$3}' ;;
-    help|*) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//' ;;
+    help|*) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//' ;;
   esac
 }
 
