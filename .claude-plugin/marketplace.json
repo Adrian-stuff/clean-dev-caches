@@ -1,0 +1,17 @@
+{
+  "name": "clean-dev-caches",
+  "owner": {
+    "name": "Adrian De Vera"
+  },
+  "plugins": [
+    {
+      "name": "clean-dev-caches",
+      "source": "./",
+      "description": "Free disk space by clearing regenerable developer caches, stale build outputs and merged git worktrees",
+      "version": "1.0.0",
+      "author": {
+        "name": "Adrian De Vera"
+      }
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "name": "clean-dev-caches",
+  "description": "Free disk space by clearing regenerable developer caches, stale build outputs and merged git worktrees — safely, with a dry run first",
+  "version": "1.0.0",
+  "author": {
+    "name": "Adrian De Vera"
+  },
+  "homepage": "https://github.com/Adrian-stuff/clean-dev-caches",
+  "repository": "https://github.com/Adrian-stuff/clean-dev-caches",
+  "license": "MIT",
+  "keywords": ["disk-space", "cache", "cleanup", "macos", "developer-tools"]
+}
