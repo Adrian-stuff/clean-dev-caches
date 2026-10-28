@@ -9,7 +9,7 @@
       "name": "clean-dev-caches",
       "source": "./",
       "description": "Free disk space by clearing regenerable developer caches, stale build outputs, merged git worktrees and unused tools",
-      "version": "1.2.0",
+      "version": "1.2.1",
       "author": {
         "name": "Adrian De Vera"
       }

@@ -17,7 +17,7 @@
 # Written for bash 3.2 (the macOS default): no associative arrays, no mapfile.
 
 set -uo pipefail
-VERSION=1.2.0
+VERSION=1.2.1
 # System tools first: a stray `head`, `du` or `sort` earlier on PATH (XAMPP ships a perl
 # `head`, for one) silently breaks the parsing below.
 export PATH="/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
