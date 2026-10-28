@@ -40,6 +40,7 @@ With Homebrew:
 
 ```bash
 brew tap Adrian-stuff/clean-dev-caches https://github.com/Adrian-stuff/clean-dev-caches
+brew trust adrian-stuff/clean-dev-caches   # recent Homebrew asks before loading a third-party tap
 brew install devclean
 ```
 
