@@ -1,5 +1,6 @@
 {
   "name": "clean-dev-caches",
+  "description": "Free disk space by safely clearing developer caches, stale build outputs and merged git worktrees",
   "owner": {
     "name": "Adrian De Vera"
   },
