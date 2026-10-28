@@ -3,8 +3,11 @@
 #
 #   devclean.sh scan [--deep]                      what can be freed, nothing deleted
 #   devclean.sh clean [--deep] [--only a,b] [--yes] delete caches (dry run without --yes)
-#   devclean.sh builds DIR... [--yes]              .next/.turbo/target/... under DIR (dry run without --yes)
+#   devclean.sh builds DIR... [--older-than DAYS] [--node-modules] [--yes]
+#                                                  .next/.turbo/target/... under DIR (dry run without --yes);
+#                                                  --node-modules adds deps of projects idle that long
 #   devclean.sh worktrees REPO                     which git worktrees are safe to remove (report only)
+#   devclean.sh suggest [DIR...]                   bigger wins beyond caches, with how to act (report only)
 #
 # Everything this deletes is rebuilt or re-downloaded on demand. It never touches
 # Docker images or volumes, emulators, simulators' data, browser profiles, or git work.
@@ -268,30 +271,217 @@ cmd_clean() {
 
 # ---------- project build outputs ----------
 
+mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo 0; }
+
+# Days since anything near the top of DIR was written. A folder's own mtime only moves when
+# its direct entries change, so a busy .next can look months old by that alone.
+days_ago() {
+  local newest
+  newest=$(find "$1" -maxdepth 2 -exec stat -f '%m' {} + 2>/dev/null | sort -n | tail -1)
+  [ -n "$newest" ] || newest=$(find "$1" -maxdepth 2 -printf '%T@\n' 2>/dev/null | sort -n | tail -1 | cut -d. -f1)
+  echo $(( ($(date +%s) - ${newest:-$(mtime "$1")}) / 86400 ))
+}
+
+# True when nothing in the project (outside dependency and build folders) changed in DAYS days.
+idle_for() { # idle_for PROJECT DAYS
+  [ -z "$(find "$1" -maxdepth 3 \( -name node_modules -o -name .git -o -name .next -o -name .turbo \
+          -o -name target -o -name dist -o -name build \) -prune -o -type f -mtime "-$2" -print -quit 2>/dev/null)" ]
+}
+
+build_dirs() { # build_dirs WITH_NODE_MODULES DIR...
+  local nm=$1; shift
+  if [ "$nm" = 1 ]; then
+    find "$@" -name .git -prune -o -type d \( -name node_modules -o -name .next -o -name .turbo -o -name .nuxt \
+      -o -name .svelte-kit -o -name .parcel-cache -o -name .angular -o -name .expo -o -name target \) -print -prune 2>/dev/null
+  else
+    find "$@" \( -name node_modules -o -name .git \) -prune -o -type d \( -name .next -o -name .turbo -o -name .nuxt \
+      -o -name .svelte-kit -o -name .parcel-cache -o -name .angular -o -name .expo -o -name target \) -print -prune 2>/dev/null
+  fi
+}
+
 cmd_builds() {
-  local yes=$1; shift
-  local total=0 d k root
-  [ $# -gt 0 ] || { echo "usage: devclean.sh builds DIR... [--yes]" >&2; return 2; }
-  printf '%8s  %-6s %s\n' SIZE STATUS PATH
+  local yes=$1 older=$2 nm=$3; shift 3
+  local total=0 d k root age name
+  [ $# -gt 0 ] || { echo "usage: devclean.sh builds DIR... [--older-than DAYS] [--node-modules] [--yes]" >&2; return 2; }
+  if [ "$nm" = 1 ] && [ "$older" -eq 0 ]; then
+    echo "--node-modules needs --older-than DAYS, so active projects keep their dependencies." >&2; return 2
+  fi
+  printf '%8s  %-7s %-9s %s\n' SIZE STATUS BUILT PATH
   while IFS= read -r d; do
     [ -n "$d" ] || continue
-    root=$(dirname "$d")
+    root=$(dirname "$d"); name=$(basename "$d")
     # Rust's target/ only when it sits next to a Cargo.toml.
-    [ "$(basename "$d")" = target ] && [ ! -f "$root/Cargo.toml" ] && continue
+    [ "$name" = target ] && [ ! -f "$root/Cargo.toml" ] && continue
+    age="$(days_ago "$d")d ago"
+    if [ "$older" -gt 0 ]; then
+      # Build outputs: judged by when they were last written. node_modules: by when the project last changed.
+      if [ "$name" = node_modules ]; then idle_for "$root" "$older" || continue
+      elif [ "$(days_ago "$d")" -lt "$older" ]; then continue; fi
+    fi
     k=$(size_k "$d")
     if in_use "$root"; then
-      printf '%8s  %-6s %s  — a process is running in this project\n' "$(human "$k")" skip "$d"
+      printf '%8s  %-7s %-9s %s  — a process is running in this project\n' "$(human "$k")" skip "$age" "$d"
       continue
     fi
     total=$((total + k))
-    if [ "$yes" = 1 ]; then rm -rf "$d" 2>/dev/null; printf '%8s  %-6s %s\n' "$(human "$k")" deleted "$d"
-    else printf '%8s  %-6s %s\n' "$(human "$k")" ready "$d"; fi
-  done < <(find "$@" \( -name node_modules -o -name .git \) -prune -o -type d \
-             \( -name .next -o -name .turbo -o -name .nuxt -o -name .svelte-kit -o -name .parcel-cache \
-                -o -name .angular -o -name .expo -o -name target \) -print -prune 2>/dev/null)
+    if [ "$yes" = 1 ]; then rm -rf "$d" 2>/dev/null; printf '%8s  %-7s %-9s %s\n' "$(human "$k")" deleted "$age" "$d"
+    else printf '%8s  %-7s %-9s %s\n' "$(human "$k")" ready "$age" "$d"; fi
+  done < <(build_dirs "$nm" "$@")
   echo
   if [ "$yes" = 1 ]; then echo "Deleted about $(human "$total")."
-  else echo "About $(human "$total") ready. Re-run with --yes to delete; the next dev/build recreates them."; fi
+  else echo "About $(human "$total") ready. Re-run with --yes to delete; the next install/build recreates them."; fi
+}
+
+# ---------- suggestions beyond caches (report only) ----------
+
+SUG=""
+suggest() { # suggest KiB WHAT HOW
+  [ "${1:-0}" -ge 102400 ] || return 0 # under 100 MB isn't worth a line
+  SUG="${SUG}$1	$2	$3
+"
+}
+
+cmd_suggest() {
+  local roots=("$@") p k n
+  if [ ${#roots[@]} -eq 0 ]; then
+    for p in "$H/projects" "$H/code" "$H/dev" "$H/src" "$H/Developer" "$H/workspace" "$H/repos" "$H/git"; do
+      [ -d "$p" ] && roots+=("$p")
+    done
+  fi
+  echo "Looking for space beyond caches (nothing is deleted)..." >&2
+
+  # Trash and Downloads
+  [ -r "$H/.Trash" ] && suggest "$(size_k "$H/.Trash")" "Trash" "Empty it in Finder"
+  if [ -d "$H/Downloads" ]; then
+    k=0; n=0
+    while IFS= read -r p; do k=$((k + $(size_k "$p"))); n=$((n + 1)); done < <(find "$H/Downloads" -maxdepth 2 -type f \
+      \( -iname '*.dmg' -o -iname '*.pkg' -o -iname '*.iso' -o -iname '*.xip' -o -iname '*.zip' -o -iname '*.tar.gz' \) 2>/dev/null)
+    suggest "$k" "Downloads: $n installers and archives (.dmg .pkg .iso .xip .zip)" "Delete the ones already installed or extracted"
+    k=0; n=0
+    while IFS= read -r p; do k=$((k + $(size_k "$p"))); n=$((n + 1)); done < <(find "$H/Downloads" -type f -size +200M -mtime +90 2>/dev/null)
+    suggest "$k" "Downloads: $n files over 200 MB untouched for 90+ days" "find ~/Downloads -type f -size +200M -mtime +90"
+  fi
+
+  # Projects: idle dependencies and build outputs
+  if [ ${#roots[@]} -gt 0 ]; then
+    k=0; n=0
+    while IFS= read -r p; do
+      [ "$(basename "$p")" = node_modules ] || continue
+      idle_for "$(dirname "$p")" 90 || continue
+      in_use "$(dirname "$p")" && continue
+      k=$((k + $(size_k "$p"))); n=$((n + 1))
+    done < <(build_dirs 1 "${roots[@]}")
+    suggest "$k" "node_modules in $n projects idle for 90+ days (du overstates on APFS)" \
+      "devclean.sh builds ${roots[*]} --older-than 90 --node-modules --yes"
+    k=0; n=0
+    while IFS= read -r p; do
+      [ "$(basename "$p")" = node_modules ] && continue
+      [ "$(basename "$p")" = target ] && [ ! -f "$(dirname "$p")/Cargo.toml" ] && continue
+      [ "$(days_ago "$p")" -ge 30 ] || continue
+      in_use "$(dirname "$p")" && continue
+      k=$((k + $(size_k "$p"))); n=$((n + 1))
+    done < <(build_dirs 0 "${roots[@]}")
+    suggest "$k" "$n build outputs (.next, .turbo, target...) not rebuilt for 30+ days" \
+      "devclean.sh builds ${roots[*]} --older-than 30 --yes"
+  fi
+
+  # Docker
+  if have docker && with_timeout 10 docker info >/dev/null 2>&1; then
+    k=$(docker system df --format '{{.Type}}|{{.Reclaimable}}' 2>/dev/null | awk -F'|' '$1=="Images"{v=$2; sub(/ .*/,"",v); n=v+0; u=v; gsub(/[0-9.]/,"",u);
+        m=(u=="TB"?1073741824:u=="GB"?1048576:u=="MB"?1024:u=="kB"?1:0); printf "%d", n*m}')
+    suggest "${k:-0}" "Docker images no container uses" "docker image ls, then docker image rm <id> (or docker image prune -a)"
+  fi
+
+  # Virtual machines (their disks hold containers and images, so never "just a large file")
+  local dd="$H/Library/Containers/com.docker.docker/Data" vm
+  if [ -d "$H/.colima" ]; then
+    how="colima prune clears its download cache; colima delete removes the VM with every container and image in it"
+    [ -d "$dd" ] && how="You also have Docker Desktop — keep one runtime. $how"
+    suggest "$(size_k "$H/.colima")" "Colima VM" "$how"
+  fi
+  [ -d "$H/.orbstack" ] && suggest "$(size_k "$H/.orbstack")" "OrbStack data" "Remove unused machines and images in OrbStack"
+  for vm in "$H/Parallels" "$H/VirtualBox VMs" "$H/Library/Containers/com.utmapp.UTM/Data/Documents"; do
+    [ -d "$vm" ] && suggest "$(size_k "$vm")" "Virtual machines in ${vm#$H/}" "Delete VMs you no longer boot, from inside the VM app"
+  done
+
+  # Local AI models
+  [ -d "$H/.ollama/models" ] && suggest "$(size_k "$H/.ollama/models")" "Ollama models" "ollama list, then ollama rm <model> for ones you no longer run"
+  [ -d "$H/.cache/huggingface" ] && suggest "$(size_k "$H/.cache/huggingface")" "Hugging Face model cache" "huggingface-cli delete-cache (pick models interactively)"
+  [ -d "$H/.lmstudio/models" ] && suggest "$(size_k "$H/.lmstudio/models")" "LM Studio models" "Remove unused models in LM Studio > My Models"
+
+  # Mobile
+  local avd
+  for avd in "$H/.android/avd"/*.avd; do
+    [ -d "$avd" ] && suggest "$(size_k "$avd")" "Android emulator $(basename "$avd" .avd)" "Delete it in Android Studio > Device Manager if unused"
+  done
+  for p in "$H/Library/Android/sdk/system-images" "$H/Android/Sdk/system-images"; do
+    [ -d "$p" ] && suggest "$(size_k "$p")" "Android SDK system images" "Uninstall unused ones in Android Studio > SDK Manager"
+  done
+  p="$H/Library/Developer/Xcode/iOS DeviceSupport"
+  if [ -d "$p" ] && [ "$(ls -1 "$p" | wc -l)" -gt 1 ]; then
+    k=$(ls -1 "$p" | sort -V | sed '$d' | while IFS= read -r v; do size_k "$p/$v"; done | awk '{s+=$1} END{print s+0}')
+    suggest "$k" "iOS DeviceSupport for older iOS versions" "Delete all but the newest folder in $p"
+  fi
+  [ -d "$H/Library/Developer/Xcode/Archives" ] && suggest "$(size_k "$H/Library/Developer/Xcode/Archives")" "Xcode Archives" "Keep the ones you may need to symbolicate; delete in Xcode > Organizer"
+  if have xcrun && xcrun simctl help >/dev/null 2>&1; then
+    suggest "$(size_k "$H/Library/Developer/CoreSimulator/Devices")" "Simulator devices" "xcrun simctl delete unavailable; remove unused runtimes in Xcode > Settings > Platforms"
+  fi
+  n=$(ls -d /Applications/Xcode*.app 2>/dev/null | wc -l | tr -d ' ')
+  [ "$n" -gt 1 ] && suggest "$(size_k /Applications/Xcode*.app)" "$n Xcode versions installed" "Keep the one you build with"
+  p="$H/Library/Application Support/MobileSync/Backup"
+  [ -r "$p" ] && suggest "$(size_k "$p")" "iPhone/iPad backups on this Mac" "Finder > your device > Manage Backups"
+
+  # Language toolchains with several versions
+  local dir label how
+  for spec in "$H/.nvm/versions/node|Node versions (nvm)|nvm ls, then nvm uninstall <version>" \
+              "$H/.local/share/fnm/node-versions|Node versions (fnm)|fnm list, then fnm uninstall <version>" \
+              "$H/.volta/tools/image/node|Node versions (Volta)|volta list all; remove old ones from ~/.volta/tools/image/node" \
+              "$H/.rustup/toolchains|Rust toolchains|rustup toolchain list, then rustup toolchain uninstall <name>" \
+              "$H/.pyenv/versions|Python versions (pyenv)|pyenv versions, then pyenv uninstall <version>" \
+              "$H/.sdkman/candidates/java|Java versions (SDKMAN)|sdk list java, then sdk uninstall java <version>"; do
+    dir=${spec%%|*}; label=${spec#*|}; how=${label#*|}; label=${label%%|*}
+    [ -d "$dir" ] || continue
+    n=$(ls -1 "$dir" 2>/dev/null | grep -vc '^current$')
+    [ "$n" -gt 1 ] && suggest "$(size_k "$dir")" "$n $label" "$how"
+  done
+  for p in "$H/miniconda3/pkgs" "$H/anaconda3/pkgs" "$H/miniforge3/pkgs" "$H/opt/anaconda3/pkgs"; do
+    [ -d "$p" ] && suggest "$(size_k "$p")" "Conda package cache" "conda clean --all"
+  done
+
+  # Homebrew packages nothing depends on
+  if have brew; then
+    n=$(brew autoremove --dry-run 2>/dev/null | grep -cv '^==>')
+    [ "$n" -gt 0 ] && suggest 102400 "$n Homebrew packages nothing depends on any more (size not measured)" "brew autoremove"
+  fi
+
+  # Big app caches that aren't developer tools
+  while IFS= read -r line; do
+    k=${line%%	*}; p=${line#*	}
+    case $(basename "$p") in Homebrew|pip|bun|Yarn|CocoaPods|ms-playwright*|go-build|node-gyp|typescript|electron|JetBrains|deno|composer|uv|com.apple.dt.Xcode) continue ;; esac
+    [ "$k" -ge 512000 ] && suggest "$k" "App cache: $(basename "$p")" "Clear it from inside the app (or quit the app and delete $p)"
+  done < <(du -sk "$LC"/* 2>/dev/null | sort -rn | head -8)
+
+  # Large files anywhere else in your home folder
+  echo "Scanning your home folder for files over 1 GB (takes a minute)..." >&2
+  while IFS= read -r p; do
+    suggest "$(size_k "$p")" "Large file: ${p#$H/}" "Delete or move to external storage if you don't need it"
+  done < <(find "$H" \( -path "$H/Library" -o -path "$H/.Trash" -o -path "$H/Downloads" -o -path "$H/.android" \
+             -o -path "$H/.ollama" -o -path "$H/.cache" -o -path "$H/.lmstudio" -o -path "$H/.docker" -o -path "$H/.colima" \
+             -o -path "$H/.orbstack" -o -path "$H/Parallels" -o -path "$H/VirtualBox VMs" -o -name node_modules \
+             -o -name .git \) -prune -o -type f -size +1G -print 2>/dev/null | head -15)
+
+  # Time Machine local snapshots
+  n=$(tmutil listlocalsnapshots / 2>/dev/null | grep -c 'com.apple.TimeMachine')
+  [ "${n:-0}" -gt 0 ] && suggest 102400 "$n Time Machine local snapshots (size not measured)" "They're deleted automatically when space runs low; tmutil thinlocalsnapshots / to force it"
+
+  if [ -z "$SUG" ]; then echo "Nothing over 100 MB found."; return; fi
+  echo
+  printf '%8s  %s\n' SIZE "WHAT  →  HOW"
+  printf '%s' "$SUG" | sort -t'	' -k1,1 -rn | while IFS='	' read -r k what how; do
+    printf '%8s  %s\n          →  %s\n' "$(human "$k")" "$what" "$how"
+  done
+  echo
+  echo "Sizes come from du and may overstate on APFS. Nothing here is deleted by this script."
 }
 
 # ---------- git worktrees ----------
@@ -338,10 +528,13 @@ cmd_worktrees() {
 
 main() {
   local cmd=${1:-scan}; [ $# -gt 0 ] && shift
-  local deep=0 only="" yes=0 args=()
+  local deep=0 only="" yes=0 older=0 nm=0 args=()
   while [ $# -gt 0 ]; do
     case $1 in
       --deep) deep=1 ;;
+      --older-than) older=${2:-0}; shift ;;
+      --older-than=*) older=${1#--older-than=} ;;
+      --node-modules) nm=1 ;;
       --only) only=${2:-}; shift ;;
       --only=*) only=${1#--only=} ;;
       --yes|-y) yes=1 ;;
@@ -357,10 +550,11 @@ main() {
   case $cmd in
     scan) cmd_scan "$deep" "$only" ;;
     clean) cmd_clean "$deep" "$only" "$yes" ;;
-    builds) cmd_builds "$yes" ${args[@]+"${args[@]}"} ;;
+    builds) cmd_builds "$yes" "$older" "$nm" ${args[@]+"${args[@]}"} ;;
+    suggest) cmd_suggest ${args[@]+"${args[@]}"} ;;
     worktrees) cmd_worktrees ${args[@]+"${args[@]}"} ;;
     list) echo "$TARGETS" | awk -F'|' 'NF>2{printf "%-11s %-5s %s\n",$1,$2,$3}' ;;
-    help|*) sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//' ;;
+    help|*) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//' ;;
   esac
 }
 

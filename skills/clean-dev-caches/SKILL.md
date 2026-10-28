@@ -17,7 +17,10 @@ bash scripts/devclean.sh clean --yes       # delete every "ready" cache in the d
 bash scripts/devclean.sh clean --only npm,gradle --yes
 bash scripts/devclean.sh scan --deep       # also Maven, Go modules, Cargo sources, NuGet
 bash scripts/devclean.sh builds ~/projects # .next/.turbo/... under a folder (add --yes to delete)
+bash scripts/devclean.sh builds ~/projects --older-than 30          # only outputs not rebuilt in 30 days
+bash scripts/devclean.sh builds ~/projects --older-than 90 --node-modules   # + deps of idle projects
 bash scripts/devclean.sh worktrees ~/projects/my-repo   # report only
+bash scripts/devclean.sh suggest           # bigger wins beyond caches; report only
 bash scripts/devclean.sh list              # every cache id
 ```
 
@@ -33,9 +36,13 @@ bash scripts/devclean.sh list              # every cache id
 3. **Clean.** `devclean.sh clean --yes`, or `--only id,id` to clean less. Rows marked `skip`
    are skipped on their own. Don't work around them by deleting the path yourself.
 4. **Build outputs (optional).** Ask which folder holds their projects (common ones:
-   `~/projects`, `~/code`, `~/dev`, `~/src`, `~/Developer`). Run `builds DIR`, show it, and
-   only then use `builds DIR --yes`. A project with any running process inside it is
-   skipped. That covers dev servers, editors' terminals and other agents.
+   `~/projects`, `~/code`, `~/dev`, `~/src`, `~/Developer`). Prefer
+   `builds DIR --older-than 30`: deleting the `.next` of a project they work on today only
+   makes the next dev start slow. Show the list, then re-run with `--yes`. Projects with any
+   running process inside them are skipped. That covers dev servers, editors' terminals and
+   other agents. `--node-modules` (only with `--older-than`) also removes the dependencies of
+   projects where nothing changed for that many days. `bun install` or `npm install` brings
+   them back.
 5. **Worktrees (optional).** `worktrees REPO` labels each linked worktree:
    - `SAFE`: no uncommitted changes, and every commit is in the default branch (or its PR
      was merged and every commit is pushed).
@@ -46,9 +53,24 @@ bash scripts/devclean.sh list              # every cache id
    Show the table and remove only what the user approves. Right before removing, re-check
    that nothing is running in that worktree, because agents and terminals start up all the
    time. Use `git worktree remove --force <path>` and keep the branches.
-6. **Report.** Run `df -h ~` again and give the change in free space as the result. Also
-   list what was skipped and why, plus the "Not touched" items with the commands the user
-   could run themselves.
+6. **Suggest the bigger wins.** `devclean.sh suggest [DIR...]` looks past caches:
+   - installers and old large files in Downloads
+   - idle `node_modules` and build outputs
+   - unused Docker images
+   - Colima, OrbStack and other VMs, and a second container runtime
+   - Ollama, Hugging Face and LM Studio models
+   - Android emulators, iOS DeviceSupport, Xcode Archives and extra Xcode versions
+   - extra Node, Rust, Python and Java versions
+   - Conda packages and orphaned Homebrew packages
+   - big app caches, files over 1 GB, and Time Machine snapshots
+
+   It deletes nothing. Each line is a size, what it is, and how to act. Pass these to the
+   user as suggestions, biggest first, in plain words. Act on one only when they pick it,
+   and use the command on its line. A VM disk or a model is someone's working environment,
+   not junk. Never `colima delete`, `docker image prune -a` or `ollama rm` without a
+   specific yes.
+7. **Report.** Run `df -h ~` again and give the change in free space as the result. Also
+   list what was skipped and why.
 
 ## Things to know
 

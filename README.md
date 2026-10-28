@@ -65,10 +65,46 @@ bash $S clean                    # dry run
 bash $S clean --yes              # delete every "ready" cache
 bash $S clean --only npm,gradle --yes
 bash $S scan --deep              # include Maven, Go modules, Cargo sources, NuGet
-bash $S builds ~/projects        # stale .next/.turbo/... (add --yes to delete)
+bash $S builds ~/projects --older-than 30   # .next/.turbo/... not rebuilt in 30 days (add --yes)
+bash $S builds ~/projects --older-than 90 --node-modules   # + node_modules of idle projects
 bash $S worktrees ~/code/my-repo # SAFE / KEEP / REVIEW for each git worktree
+bash $S suggest                  # bigger wins beyond caches (report only)
 bash $S list                     # every cache id
 ```
+
+### `suggest`: where the rest of your disk went
+
+Caches are only part of the story. `suggest` deletes nothing. It lists the other usual
+suspects, biggest first, each with how to deal with it:
+
+```
+    SIZE  WHAT  →  HOW
+   12.8G  Downloads: 65 installers and archives (.dmg .pkg .iso .xip .zip)
+          →  Delete the ones already installed or extracted
+    9.3G  Ollama models
+          →  ollama list, then ollama rm <model> for ones you no longer run
+    7.8G  Colima VM
+          →  You also have Docker Desktop — keep one runtime. colima prune clears its download cache; ...
+    5.8G  Android emulator payroll_test
+          →  Delete it in Android Studio > Device Manager if unused
+    5.0G  Docker images no container uses
+          →  docker image ls, then docker image rm <id> (or docker image prune -a)
+    1.0G  node_modules in 3 projects idle for 90+ days (du overstates on APFS)
+          →  devclean.sh builds ~/projects --older-than 90 --node-modules --yes
+```
+
+It looks at:
+- Downloads
+- idle `node_modules` and build outputs
+- unused Docker images
+- Colima, OrbStack, Parallels, VirtualBox and UTM VMs
+- Ollama, Hugging Face and LM Studio models
+- Android emulators and system images
+- iOS DeviceSupport, Xcode Archives, simulators and extra Xcode versions
+- iPhone backups
+- extra Node, Rust, Python and Java versions (nvm, fnm, Volta, rustup, pyenv, SDKMAN)
+- Conda packages and orphaned Homebrew packages
+- big app caches, files over 1 GB, and Time Machine local snapshots
 
 Example `scan`:
 
